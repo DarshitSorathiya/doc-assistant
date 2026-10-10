@@ -72,6 +72,7 @@ class DocumentRetriever:
         category: Optional[str] = None,
         top_k: int = 5,
         use_reranker: bool = True,
+        alpha: float = 0.5,
     ) -> List[SearchResultItem]:
         """Execute hybrid search (Vector + BM25 + RRF + Reranker)."""
         return hybrid_searcher.search(
@@ -81,6 +82,7 @@ class DocumentRetriever:
             category=category,
             top_k=top_k,
             use_reranker=use_reranker,
+            alpha=alpha,
         )
 
     @staticmethod
@@ -132,6 +134,7 @@ class DocumentRetriever:
         category: Optional[str] = None,
         top_k: int = 5,
         use_reranker: bool = True,
+        alpha: float = 0.5,
     ) -> List[SearchResultItem]:
         """Dispatch query to requested search mode."""
         if mode == "keyword":
@@ -139,7 +142,15 @@ class DocumentRetriever:
         elif mode == "semantic":
             return self.semantic_search(user_id=user_id, query=query, category=category, top_k=top_k)
         else:
-            return self.hybrid_search(db=db, user_id=user_id, query=query, category=category, top_k=top_k, use_reranker=use_reranker)
+            return self.hybrid_search(
+                db=db,
+                user_id=user_id,
+                query=query,
+                category=category,
+                top_k=top_k,
+                use_reranker=use_reranker,
+                alpha=alpha,
+            )
 
 
 # Global retriever instance

@@ -18,7 +18,7 @@ This repository is the Personal Document Finder application: a FastAPI-based doc
   ```
 - Health check:
   ```bash
-  curl http://localhost:8000/health
+  curl http://localhost:8001/health
   ```
 - Run the test suite:
   ```bash
@@ -59,6 +59,16 @@ This repository is the Personal Document Finder application: a FastAPI-based doc
 - Keep documentation in the existing docs set and link to it rather than duplicating it in code comments.
 - Follow the project’s FastAPI/Pydantic patterns and keep API schemas aligned with route handlers.
 - Respect the modularization by feature area; do not mix OCR, graph, and retrieval concerns in a single module unless the existing pattern already does so.
+- For API or UI changes, validate the relevant behavior with the closest existing pytest target and avoid broad refactors without a clear cause.
+- Treat the docs in [docs/](docs/) as the authoritative source for architecture and product behavior; link to them instead of restating design details in code comments or PR descriptions.
+- Keep the FastAPI app and Streamlit UI aligned on the same ports and auth patterns: the app runs on port 8001 and the UI expects this backend at `http://localhost:8001`.
+
+## Operational guidance for AI coding agents
+
+- Start from the existing feature boundaries: document ingestion, OCR extraction, embeddings/search, graph logic, and agent orchestration are each intentionally separated in the app package.
+- When a change touches multiple layers, keep the change small and preserve the integration points already defined by the route/schema/service pattern.
+- Prefer targeted tests over ad hoc manual checks when a regression is in scope; the suite under [tests/](tests/) is the main project validation signal.
+- Before adding new dependencies or environment flags, check whether the project already has a supported config path or module abstraction for that concern.
 
 ## References
 

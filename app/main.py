@@ -4,7 +4,7 @@
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config.settings import get_settings
@@ -63,6 +63,23 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+
+@app.get("/", include_in_schema=False)
+async def root():
+    """Point browser visitors to the separate Streamlit frontend."""
+    return {
+        "service": "Personal Document Finder API",
+        "health": "/health",
+        "docs": "/docs",
+        "ui": "http://localhost:8501",
+    }
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    """Return an empty successful response for browser favicon probes."""
+    return Response(status_code=204)
 
 
 # ------------------------------------------------------------------

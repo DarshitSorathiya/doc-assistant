@@ -16,6 +16,7 @@ class ChatMessage(BaseModel):
     content: str
     timestamp: float = Field(default_factory=time.time)
     sources: Optional[List[Dict[str, Any]]] = None
+    document_options: Optional[List[Dict[str, Any]]] = None
 
 
 class ConversationMemory:
@@ -31,6 +32,10 @@ class ConversationMemory:
         key = (user_id, session_id)
         return self._sessions.get(key, [])
 
+    def set_history(self, user_id: int, session_id: str, history: List[ChatMessage]):
+        """Restore persisted messages into the in-memory context window."""
+        self._sessions[(user_id, session_id)] = history[-self.max_turns * 2:]
+
     def add_user_message(self, user_id: int, session_id: str, content: str):
         """Record user message in session history."""
         key = (user_id, session_id)
@@ -45,13 +50,19 @@ class ConversationMemory:
         session_id: str,
         content: str,
         sources: Optional[List[Dict[str, Any]]] = None,
+        document_options: Optional[List[Dict[str, Any]]] = None,
     ):
         """Record assistant answer in session history."""
         key = (user_id, session_id)
         if key not in self._sessions:
             self._sessions[key] = []
         self._sessions[key].append(
-            ChatMessage(role="assistant", content=content, sources=sources)
+            ChatMessage(
+                role="assistant",
+                content=content,
+                sources=sources,
+                document_options=document_options,
+            )
         )
         self._trim_history(key)
 

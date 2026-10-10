@@ -5,7 +5,7 @@
 # dependency (`get_db`) that yields a session per request.
 # ============================================================
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import sessionmaker, Session, DeclarativeBase
 from typing import Generator
 
@@ -86,3 +86,15 @@ def create_tables() -> None:
     Only use for local dev / tests. Production uses Alembic migrations.
     """
     Base.metadata.create_all(bind=engine)
+
+    # ``create_all`` creates missing tables but does not add columns to existing
+    # ones. This additive migration is needed by databases created before chat
+    # document-selection metadata was introduced. It preserves existing chats.
+    inspector = inspect(engine)
+    if "chat_messages" in inspector.get_table_names():
+        columns = {column["name"] for column in inspector.get_columns("chat_messages")}
+        if "document_options" not in columns:
+            with engine.begin() as connection:
+                connection.execute(
+                    text("ALTER TABLE chat_messages ADD COLUMN document_options JSON")
+                )

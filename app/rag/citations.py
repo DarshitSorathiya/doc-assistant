@@ -92,21 +92,41 @@ class CitationManager:
                 "did", "can", "could", "would", "will", "have", "has", "had", "find",
                 "show", "give", "get", "with", "from", "by", "as", "number", "details",
                 "information", "please", "any", "which", "where", "who", "when", "why",
+                "should", "know", "document", "documents", "file", "files", "based", "using",
             }
             query_tokens = [w for w in re.findall(r"\b[a-zA-Z0-9_-]{3,}\b", query.lower()) if w not in stopwords]
             
             if query_tokens:
-                # Check if at least one core subject keyword exists in any chunk as a whole word
+                # User wording often differs from labels used in a document.
+                synonym_groups = (
+                    {"coverage", "cover", "covered", "covers", "protection", "insured", "insurance"},
+                    {"cost", "price", "premium", "fee", "amount", "charge", "payment"},
+                    {"salary", "income", "pay", "compensation", "wage"},
+                    {"expiry", "expiration", "expires", "validity", "valid", "due"},
+                    {"job", "role", "position", "employment", "work"},
+                    {"degree", "education", "qualification", "university", "college"},
+                )
+                expanded_query_tokens = set(query_tokens)
+                for group in synonym_groups:
+                    if expanded_query_tokens.intersection(group):
+                        expanded_query_tokens.update(group)
+
                 all_text = " ".join(c.get("text", "").lower() for c in chunks)
                 has_keyword_match = any(
                     bool(re.search(rf"\b{re.escape(token)}\b", all_text))
-                    for token in query_tokens
+                    for token in expanded_query_tokens
                 )
                 if not has_keyword_match:
                     return True
+            else:
+                has_keyword_match = False
+        else:
+            has_keyword_match = False
 
         top_score = chunks[0].get("score", 0.0) if chunks else 0.0
-        if top_score is not None and top_score < min_score:
+        # RRF scores are naturally smaller than reranker scores; trust a clear
+        # concept/keyword match instead of imposing one scale-dependent cutoff.
+        if top_score is not None and top_score < min_score and not has_keyword_match:
             return True
 
         return False

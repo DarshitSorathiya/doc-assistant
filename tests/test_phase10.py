@@ -12,6 +12,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.main import app
 from app.database import Base, get_db
+from app.models import Entity
 from app.rag.memory import conversation_memory
 
 
@@ -231,6 +232,61 @@ class TestComparisonService:
         assert "differences" in data
         assert len(data["differences"]) >= 1
 
+    def test_compare_preserves_repeated_entity_values(self, client: TestClient, auth_headers_user1, setup_services_corpus):
+        """Comparison must not discard repeated values that share an entity type."""
+        doc1_id = setup_services_corpus["doc1_id"]
+        doc2_id = setup_services_corpus["doc2_id"]
+        db = TestingSessionLocal()
+        db.add_all([
+            Entity(document_id=doc1_id, entity_type="test_attribute", value="Alpha"),
+            Entity(document_id=doc1_id, entity_type="test_attribute", value="Beta"),
+            Entity(document_id=doc2_id, entity_type="test_attribute", value="Beta"),
+            Entity(document_id=doc2_id, entity_type="test_attribute", value="Gamma"),
+        ])
+        db.commit()
+        db.close()
+
+        response = client.post(
+            "/api/v1/compare",
+            json={"doc_id_1": doc1_id, "doc_id_2": doc2_id},
+            headers=auth_headers_user1,
+        )
+
+        assert response.status_code == 200
+        difference = next(item for item in response.json()["differences"] if item["entity"] == "test_attribute")
+        assert difference[f"hdfc_health_2026.pdf (ID {doc1_id})"] == ["Alpha", "Beta"]
+        assert difference[f"hdfc_health_2027.pdf (ID {doc2_id})"] == ["Beta", "Gamma"]
+
+    def test_compare_reports_source_pages_and_rejects_same_document(self, client: TestClient, auth_headers_user1, setup_services_corpus):
+        doc1_id = setup_services_corpus["doc1_id"]
+        doc2_id = setup_services_corpus["doc2_id"]
+        db = TestingSessionLocal()
+        db.add_all([
+            Entity(document_id=doc1_id, entity_type="source_test", value="Old value", confidence=0.8, source_page=2),
+            Entity(document_id=doc2_id, entity_type="source_test", value="New value", confidence=0.95, source_page=4),
+        ])
+        db.commit()
+        db.close()
+
+        response = client.post(
+            "/api/v1/compare",
+            json={"doc_id_1": doc1_id, "doc_id_2": doc2_id},
+            headers=auth_headers_user1,
+        )
+        assert response.status_code == 200
+        diff = next(item for item in response.json()["differences"] if item["entity"] == "source_test")
+        assert diff["document_1_pages"] == [2]
+        assert diff["document_2_pages"] == [4]
+        assert diff["document_1_confidence"] == 0.8
+        assert diff["document_2_confidence"] == 0.95
+
+        same_doc = client.post(
+            "/api/v1/compare",
+            json={"doc_id_1": doc1_id, "doc_id_2": doc1_id},
+            headers=auth_headers_user1,
+        )
+        assert same_doc.status_code == 400
+
 
 class TestTimelineService:
     """Test chronological date event extraction."""
@@ -247,6 +303,54 @@ class TestTimelineService:
         assert data["total_events"] >= 2
         events = data["events"]
         assert all("date_string" in ev and "filename" in ev for ev in events)
+
+    def test_timeline_deduplicates_generic_and_expiry_date_entities(self, client: TestClient, auth_headers_user1, setup_services_corpus):
+        doc_id = setup_services_corpus["doc1_id"]
+        db = TestingSessionLocal()
+        db.add_all([
+            Entity(document_id=doc_id, entity_type="expiry_date", value="31-Dec-2099", source_page=99),
+            Entity(document_id=doc_id, entity_type="Date", value="31-Dec-2099", source_page=99),
+        ])
+        db.commit()
+        db.close()
+
+        response = client.post("/api/v1/timeline", json={}, headers=auth_headers_user1)
+
+        assert response.status_code == 200
+        matches = [
+            event for event in response.json()["events"]
+            if event["document_id"] == doc_id and event["date_string"] == "31-Dec-2099"
+        ]
+        assert len(matches) == 1
+        assert "expiry" in matches[0]["event_type"].lower()
+
+    def test_timeline_year_only_text_is_unparsed_and_stays_after_real_dates(
+        self, client: TestClient, auth_headers_user1, setup_services_corpus
+    ):
+        doc_id = setup_services_corpus["doc1_id"]
+        db = TestingSessionLocal()
+        db.add(Entity(document_id=doc_id, entity_type="Date", value="Policy version 2026", source_page=88))
+        db.commit()
+        db.close()
+
+        response = client.post(
+            "/api/v1/timeline",
+            json={"sort_order": "desc"},
+            headers=auth_headers_user1,
+        )
+        assert response.status_code == 200
+        events = response.json()["events"]
+        year_only = next(event for event in events if event["date_string"] == "Policy version 2026")
+        assert year_only["parsed_timestamp"] is None
+        assert events[-1]["date_string"] == "Policy version 2026"
+
+    def test_timeline_rejects_invalid_sort_order(self, client: TestClient, auth_headers_user1):
+        response = client.post(
+            "/api/v1/timeline",
+            json={"sort_order": "sideways"},
+            headers=auth_headers_user1,
+        )
+        assert response.status_code == 422
 
 
 class TestDuplicatesService:
@@ -281,6 +385,24 @@ class TestInsightsService:
         assert data["total_pages"] >= 3
         assert "Insurance" in data["category_distribution"]
         assert data["expiring_documents_count"] >= 2
+
+    def test_insights_exclude_ordinary_dates_and_dedupe_expiry(self, client: TestClient, auth_headers_user1, setup_services_corpus):
+        doc_id = setup_services_corpus["doc1_id"]
+        db = TestingSessionLocal()
+        db.add_all([
+            Entity(document_id=doc_id, entity_type="expiry_date", value="31-Dec-2099"),
+            Entity(document_id=doc_id, entity_type="Date", value="31-Dec-2099"),
+            Entity(document_id=doc_id, entity_type="Date", value="01-Jan-2025"),
+        ])
+        db.commit()
+        db.close()
+
+        response = client.post("/api/v1/insights", headers=auth_headers_user1)
+
+        assert response.status_code == 200
+        matches = [item for item in response.json()["expiring_documents"] if item["expiry_date"] == "31-Dec-2099"]
+        assert len(matches) == 1
+        assert not any(item["expiry_date"] == "01-Jan-2025" for item in response.json()["expiring_documents"])
 
 
 class TestServicesUserIsolation:

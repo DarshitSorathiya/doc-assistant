@@ -22,6 +22,7 @@ class QueryRequest(BaseModel):
     category: Optional[str] = Field(None, description="Optional document category filter")
     top_k: int = Field(default=5, ge=1, le=20, description="Number of context chunks to retrieve")
     use_reranker: bool = Field(default=True, description="Whether to apply neural reranking")
+    document_id: Optional[int] = Field(None, description="Optional document to use when resolving an ambiguous document-specific question")
 
 
 class QueryResponse(BaseModel):
@@ -33,6 +34,10 @@ class QueryResponse(BaseModel):
     tools_invoked: List[str] = Field(default_factory=list, description="List of agent tools called")
     confidence: float
     model_used: str
+    document_options: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Documents the user can select to disambiguate a document-specific request.",
+    )
 
 
 class SessionClearResponse(BaseModel):

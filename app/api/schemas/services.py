@@ -2,7 +2,7 @@
 # Schemas for Phase 10 Document Services API Endpoints
 # ============================================================
 
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Literal
 from pydantic import BaseModel, Field
 
 
@@ -45,7 +45,7 @@ class CompareResponse(BaseModel):
 # ------------------------------------------------------------
 class TimelineRequest(BaseModel):
     category: Optional[str] = Field(None, description="Optional category filter")
-    sort_order: str = Field(default="asc", description="Sort order: 'asc' or 'desc'")
+    sort_order: Literal["asc", "desc"] = Field(default="asc", description="Sort order: 'asc' or 'desc'")
 
 
 class TimelineEvent(BaseModel):

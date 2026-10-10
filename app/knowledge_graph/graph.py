@@ -6,6 +6,7 @@
 # ============================================================
 
 import logging
+import re
 import networkx as nx
 from typing import List, Dict, Any, Optional, Set
 from sqlalchemy.orm import Session
@@ -33,6 +34,13 @@ class KnowledgeGraphManager:
             Document.status == DocumentStatus.READY,
         ).all()
 
+        doc_ids = [doc.id for doc in docs]
+        entities_by_document: Dict[int, List[Entity]] = {}
+        if doc_ids:
+            all_entities = db.query(Entity).filter(Entity.document_id.in_(doc_ids)).all()
+            for entity in all_entities:
+                entities_by_document.setdefault(entity.document_id, []).append(entity)
+
         for doc in docs:
             doc_node_id = f"doc_{doc.id}"
             G.add_node(
@@ -44,41 +52,41 @@ class KnowledgeGraphManager:
                 page_count=doc.page_count,
             )
 
-            entities = db.query(Entity).filter(Entity.document_id == doc.id).all()
-            for ent in entities:
+            for ent in entities_by_document.get(doc.id, []):
                 ent_type_lower = ent.entity_type.lower()
                 ent_val = ent.value.strip()
+                canonical_value = re.sub(r"\s+", " ", ent_val).casefold()
 
                 if not ent_val:
                     continue
 
                 if "policy" in ent_type_lower:
-                    node_id = f"policy_{ent_val}"
+                    node_id = f"policy_{canonical_value}"
                     G.add_node(node_id, label=f"Policy: {ent_val}", node_type=NodeType.POLICY.value, value=ent_val)
                     G.add_edge(doc_node_id, node_id, relation=RelationType.HAS_POLICY.value)
 
                 elif "account" in ent_type_lower or "ifsc" in ent_type_lower:
-                    node_id = f"bank_{ent_val}"
+                    node_id = f"bank_{canonical_value}"
                     G.add_node(node_id, label=f"Bank Account: {ent_val}", node_type=NodeType.BANK_ACCOUNT.value, value=ent_val)
                     G.add_edge(doc_node_id, node_id, relation=RelationType.HAS_ACCOUNT.value)
 
                 elif "property" in ent_type_lower or "khata" in ent_type_lower or "survey" in ent_type_lower:
-                    node_id = f"property_{ent_val[:40]}"
-                    G.add_node(node_id, label=f"Property: {ent_val[:40]}", node_type=NodeType.PROPERTY.value, value=ent_val)
+                    node_id = f"property_{canonical_value}"
+                    G.add_node(node_id, label=f"Property: {ent_val[:80]}", node_type=NodeType.PROPERTY.value, value=ent_val)
                     G.add_edge(doc_node_id, node_id, relation=RelationType.LOCATED_AT.value)
 
                 elif "pan" in ent_type_lower or "aadhaar" in ent_type_lower or "passport" in ent_type_lower or "license" in ent_type_lower:
-                    node_id = f"tax_{ent_val}"
+                    node_id = f"tax_{canonical_value}"
                     G.add_node(node_id, label=f"{ent.entity_type}: {ent_val}", node_type=NodeType.TAX_ID.value, value=ent_val)
                     G.add_edge(doc_node_id, node_id, relation=RelationType.CONTAINS.value)
 
                 elif "name" in ent_type_lower or "holder" in ent_type_lower or "purchaser" in ent_type_lower:
-                    node_id = f"person_{ent_val.lower()}"
+                    node_id = f"person_{canonical_value}"
                     G.add_node(node_id, label=ent_val, node_type=NodeType.PERSON.value, value=ent_val)
                     G.add_edge(node_id, doc_node_id, relation=RelationType.OWNS.value)
 
                 elif "issuer" in ent_type_lower or "bank" in ent_type_lower or "organization" in ent_type_lower:
-                    node_id = f"org_{ent_val.lower()}"
+                    node_id = f"org_{canonical_value}"
                     G.add_node(node_id, label=ent_val, node_type=NodeType.ORGANIZATION.value, value=ent_val)
                     G.add_edge(node_id, doc_node_id, relation=RelationType.ISSUED_BY.value)
 
@@ -96,38 +104,39 @@ class KnowledgeGraphManager:
         """Query user's knowledge graph and return nodes and edges."""
         G = self.get_or_build_graph(db, user_id)
 
-        target_nodes: Set[str] = set()
+        candidate_nodes: Set[str] = set(G.nodes())
+        if document_id is not None:
+            doc_node_id = f"doc_{document_id}"
+            if doc_node_id not in G:
+                return {"total_nodes": 0, "total_edges": 0, "nodes": [], "edges": []}
+            candidate_nodes = {doc_node_id}
+            candidate_nodes.update(G.neighbors(doc_node_id))
+            candidate_nodes.update(G.predecessors(doc_node_id))
 
-        if document_id:
-            doc_id_str = f"doc_{document_id}"
-            if doc_id_str in G:
-                target_nodes.add(doc_id_str)
-                target_nodes.update(G.neighbors(doc_id_str))
-                target_nodes.update(G.predecessors(doc_id_str))
+        q_lower = (query or "").strip().casefold()
+        et_lower = (entity_type or "").strip().casefold()
+        if entity_type or query:
+            matched_nodes = set()
+            for node_id in candidate_nodes:
+                data = G.nodes[node_id]
+                node_type = str(data.get("node_type", "")).casefold()
+                label = str(data.get("label", "")).casefold()
+                value = str(data.get("value", "")).casefold()
+                type_match = not et_lower or et_lower in node_type
+                text_match = not q_lower or q_lower in label or q_lower in value
+                if type_match and text_match:
+                    matched_nodes.add(node_id)
+            candidate_nodes = matched_nodes
 
-        elif entity_type or query:
-            q_lower = (query or "").lower()
-            et_lower = (entity_type or "").lower()
-
-            for n, d in G.nodes(data=True):
-                n_type = d.get("node_type", "").lower()
-                n_label = d.get("label", "").lower()
-                n_val = str(d.get("value", "")).lower()
-
-                type_match = not entity_type or et_lower in n_type
-                val_match = not query or (q_lower in n_label or q_lower in n_val)
-
-                if type_match and val_match:
-                    target_nodes.add(n)
-                    # Include 1-hop neighbors
-                    target_nodes.update(G.neighbors(n))
-                    target_nodes.update(G.predecessors(n))
-        else:
-            target_nodes = set(G.nodes())
+        target_nodes = set(candidate_nodes)
+        if entity_type or query:
+            for node_id in candidate_nodes:
+                target_nodes.update(G.neighbors(node_id))
+                target_nodes.update(G.predecessors(node_id))
 
         # Construct response
         nodes_res: List[GraphNode] = []
-        for nid in target_nodes:
+        for nid in sorted(target_nodes):
             if nid in G.nodes:
                 data = G.nodes[nid]
                 nt_str = data.get("node_type", NodeType.DOCUMENT.value)

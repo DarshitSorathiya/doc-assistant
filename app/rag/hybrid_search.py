@@ -7,6 +7,7 @@
 
 import re
 import logging
+import hashlib
 from typing import List, Dict, Any, Optional
 from sqlalchemy.orm import Session
 from rank_bm25 import BM25Plus
@@ -47,10 +48,14 @@ class HybridSearcher:
         )
 
         if category:
+            matched_category = False
             for c in DocumentCategory:
                 if c.value.lower() == category.lower():
                     doc_query = doc_query.filter(Document.category == c)
+                    matched_category = True
                     break
+            if not matched_category:
+                return []
 
         docs = doc_query.all()
         if not docs:
@@ -61,19 +66,30 @@ class HybridSearcher:
         tokenized_corpus: List[List[str]] = []
 
         for doc in docs:
-            paragraphs = [p.strip() for p in doc.extracted_text.split("\n\n") if p.strip()]
-            for p_idx, para in enumerate(paragraphs):
-                tokens = _tokenize(para)
-                if tokens:
-                    tokenized_corpus.append(tokens)
-                    corpus_items.append({
-                        "document_id": doc.id,
-                        "filename": doc.filename,
-                        "category": doc.category.value if doc.category else None,
-                        "text": para,
-                        "chunk_id": f"{doc.id}_bm25_p{p_idx}",
-                        "page_number": 1,
-                    })
+            text = doc.extracted_text or ""
+            page_sections = re.split(r"(?m)^--- Page (\d+) ---\s*$", text)
+            if len(page_sections) > 1:
+                pages = [
+                    (int(page_sections[index]), page_sections[index + 1])
+                    for index in range(1, len(page_sections) - 1, 2)
+                ]
+            else:
+                pages = [(1, text)]
+
+            for page_number, page_text in pages:
+                paragraphs = [p.strip() for p in page_text.split("\n\n") if p.strip()]
+                for p_idx, para in enumerate(paragraphs):
+                    tokens = _tokenize(para)
+                    if tokens:
+                        tokenized_corpus.append(tokens)
+                        corpus_items.append({
+                            "document_id": doc.id,
+                            "filename": doc.filename,
+                            "category": doc.category.value if doc.category else None,
+                            "text": para,
+                            "chunk_id": f"{doc.id}_bm25_p{page_number}_c{p_idx}",
+                            "page_number": page_number,
+                        })
 
         if not tokenized_corpus:
             return []
@@ -84,12 +100,12 @@ class HybridSearcher:
         # Pair items with scores
         scored_items = []
         for idx, score in enumerate(doc_scores):
-            # Check if there is any token overlap or positive BM25 score
+            # BM25Plus has a positive baseline for all documents. Only include
+            # passages with actual query-token overlap to prevent unrelated hits.
             has_match = any(qt in tokenized_corpus[idx] for qt in query_tokens)
-            if score > 0.0 or has_match:
+            if has_match:
                 item = corpus_items[idx]
-                effective_score = max(float(score), 0.01) if has_match else float(score)
-                scored_items.append((effective_score, item))
+                scored_items.append((float(score), item))
 
         scored_items.sort(key=lambda x: x[0], reverse=True)
 
@@ -119,6 +135,7 @@ class HybridSearcher:
         category: Optional[str] = None,
         top_k: int = 5,
         use_reranker: bool = True,
+        alpha: float = 0.5,
         rrf_k: int = 60,
     ) -> List[SearchResultItem]:
         """Execute full hybrid search (Dense Vector + Sparse BM25 + RRF + Reranker)."""
@@ -158,18 +175,25 @@ class HybridSearcher:
         candidate_map: Dict[str, SearchResultItem] = {}
         rrf_scores: Dict[str, float] = {}
 
-        # Process vector ranks
+        alpha = min(max(alpha, 0.0), 1.0)
+
+        # Process vector ranks, weighted by the caller's dense/sparse preference.
+        def candidate_key(item: SearchResultItem) -> str:
+            normalized_text = " ".join(item.text.casefold().split())
+            text_digest = hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()
+            return f"{item.document_id}_{item.page_number}_{text_digest}"
+
         for rank, item in enumerate(vector_items):
-            key = f"{item.document_id}_{item.text[:60]}"
+            key = candidate_key(item)
             candidate_map[key] = item
-            rrf_scores[key] = rrf_scores.get(key, 0.0) + (1.0 / (rrf_k + rank + 1))
+            rrf_scores[key] = rrf_scores.get(key, 0.0) + (alpha / (rrf_k + rank + 1))
 
         # Process BM25 ranks
         for rank, item in enumerate(bm25_items):
-            key = f"{item.document_id}_{item.text[:60]}"
+            key = candidate_key(item)
             if key not in candidate_map:
                 candidate_map[key] = item
-            rrf_scores[key] = rrf_scores.get(key, 0.0) + (1.0 / (rrf_k + rank + 1))
+            rrf_scores[key] = rrf_scores.get(key, 0.0) + ((1.0 - alpha) / (rrf_k + rank + 1))
 
         # Sort by RRF score
         fused_items: List[SearchResultItem] = []

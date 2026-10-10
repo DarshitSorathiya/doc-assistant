@@ -113,7 +113,7 @@ class Settings(BaseSettings):
 
     # ---- Server ----
     HOST: str = Field(default="0.0.0.0", description="Server bind host")
-    PORT: int = Field(default=8000, description="Server bind port")
+    PORT: int = Field(default=8001, description="Server bind port")
     DEBUG: bool = Field(default=True, description="Enable debug mode")
 
     model_config = {

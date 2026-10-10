@@ -93,6 +93,7 @@ class User(Base):
     # Relationships
     documents = relationship("Document", back_populates="owner", cascade="all, delete-orphan")
     audit_logs = relationship("AuditLog", back_populates="user", cascade="all, delete-orphan")
+    chat_sessions = relationship("ChatSession", back_populates="owner", cascade="all, delete-orphan")
 
     def __repr__(self) -> str:
         return f"<User id={self.id} email={self.email} role={self.role}>"
@@ -262,3 +263,37 @@ class AuditLog(Base):
 
     def __repr__(self) -> str:
         return f"<AuditLog action={self.action} user={self.user_id}>"
+
+
+# ==================================================================
+# CHAT HISTORY
+# ==================================================================
+class ChatSession(Base):
+    """Persisted conversation metadata owned by a single user."""
+
+    __tablename__ = "chat_sessions"
+
+    id = Column(String(36), primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    title = Column(String(200), nullable=False, default="New chat")
+    created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False)
+
+    owner = relationship("User", back_populates="chat_sessions")
+    messages = relationship("ChatMessageRecord", back_populates="session", cascade="all, delete-orphan", order_by="ChatMessageRecord.id")
+
+
+class ChatMessageRecord(Base):
+    """Persisted chat turn, including citations for rendering history."""
+
+    __tablename__ = "chat_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(String(36), ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    role = Column(String(20), nullable=False)
+    content = Column(Text, nullable=False)
+    sources = Column(JSON, nullable=True)
+    document_options = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+    session = relationship("ChatSession", back_populates="messages")

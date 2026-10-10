@@ -155,6 +155,36 @@ def setup_search_corpus(client: TestClient, auth_headers_user1, auth_headers_use
 # 1. Keyword Search (BM25) Tests
 # ------------------------------------------------------------------
 class TestKeywordSearch:
+    def test_bm25_excludes_positive_baseline_without_matching_terms(
+        self, client: TestClient, auth_headers_user1, setup_search_corpus
+    ):
+        response = client.post(
+            "/api/v1/search",
+            headers=auth_headers_user1,
+            json={"query": "unrelatedquartzterm", "top_k": 10},
+        )
+        assert response.status_code == 200
+        assert response.json()["items"] == []
+
+    def test_bm25_reports_the_source_page_from_ocr_markers(self, client: TestClient, auth_headers_user1, setup_search_corpus):
+        """BM25 results should retain page markers rather than assigning all hits to page 1."""
+        db = TestingSessionLocal()
+        from app.models import Document
+
+        doc = db.query(Document).filter(Document.id == setup_search_corpus["user1_doc1"]).first()
+        doc.extracted_text = "--- Page 1 ---\nUnrelated introductory page.\n\n--- Page 2 ---\nUniqueSequoiaKeyword is the matching text."
+        db.commit()
+        db.close()
+
+        response = client.post(
+            "/api/v1/search",
+            headers=auth_headers_user1,
+            json={"query": "UniqueSequoiaKeyword", "top_k": 3},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["items"][0]["page_number"] == 2
+
     def test_bm25_keyword_exact_match(self, client: TestClient, auth_headers_user1, setup_search_corpus):
         res = client.post(
             "/api/v1/search",

@@ -76,7 +76,14 @@ def compare_documents(
         doc_id_2=request.doc_id_2,
     )
     if "error" in result:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=result["error"])
+        detail = result["error"]
+        if "not found" in detail.lower() or "unauthorized" in detail.lower():
+            code = status.HTTP_404_NOT_FOUND
+        elif "finish processing" in detail.lower():
+            code = status.HTTP_409_CONFLICT
+        else:
+            code = status.HTTP_400_BAD_REQUEST
+        raise HTTPException(status_code=code, detail=detail)
     return CompareResponse(**result)
 
 

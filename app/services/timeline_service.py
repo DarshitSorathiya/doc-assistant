@@ -26,14 +26,6 @@ def _parse_date(date_str: str) -> Optional[datetime]:
         except ValueError:
             continue
 
-    # Try extracting YYYY
-    year_match = re.search(r"\b(19\d\d|20\d\d)\b", cleaned)
-    if year_match:
-        try:
-            return datetime(year=int(year_match.group(1)), month=1, day=1)
-        except Exception:
-            pass
-
     return None
 
 
@@ -61,28 +53,43 @@ class TimelineService:
                     break
 
         results = query.all()
-        events = []
+        events_by_source_date = {}
 
         for ent, doc in results:
             ent_type_lower = ent.entity_type.lower()
             if "date" in ent_type_lower or "expiry" in ent_type_lower or "dob" in ent_type_lower:
                 parsed_dt = _parse_date(ent.value)
-                events.append({
+                event = {
                     "entity_id": ent.id,
                     "date_string": ent.value,
                     "parsed_timestamp": parsed_dt.isoformat() if parsed_dt else None,
-                    "sort_key": parsed_dt or datetime(9999, 1, 1),
+                    "sort_key": parsed_dt,
                     "event_type": ent.entity_type,
                     "confidence": ent.confidence,
                     "document_id": doc.id,
                     "filename": doc.filename,
                     "category": doc.category.value if doc.category else None,
                     "page": ent.source_page or 1,
-                })
+                }
+                key = (doc.id, ent.value.strip().lower(), ent.source_page or 1)
+                existing = events_by_source_date.get(key)
+                is_more_specific = any(term in ent_type_lower for term in ("expiry", "valid", "dob"))
+                existing_is_specific = existing and any(
+                    term in existing["event_type"].lower() for term in ("expiry", "valid", "dob")
+                )
+                if existing is None or (is_more_specific and not existing_is_specific):
+                    events_by_source_date[key] = event
 
-        # Sort chronologically
+        events = list(events_by_source_date.values())
+
+        # Sort known calendar dates chronologically; leave ambiguous/unparsed
+        # values at the end in either direction instead of treating them as 9999.
         reverse_sort = sort_order.lower() == "desc"
-        events.sort(key=lambda x: x["sort_key"], reverse=reverse_sort)
+        parsed_events = [event for event in events if event["sort_key"] is not None]
+        unparsed_events = [event for event in events if event["sort_key"] is None]
+        parsed_events.sort(key=lambda event: (event["sort_key"], event["filename"].casefold()), reverse=reverse_sort)
+        unparsed_events.sort(key=lambda event: (event["filename"].casefold(), event["date_string"].casefold()))
+        events = parsed_events + unparsed_events
 
         # Remove internal sort_key before returning
         for ev in events:

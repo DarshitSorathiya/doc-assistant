@@ -34,7 +34,7 @@ copy .env.example .env       # Windows
 uvicorn app.main:app --reload
 ```
 
-Visit [http://localhost:8000/health](http://localhost:8000/health) — you should see:
+Visit [http://localhost:8001/health](http://localhost:8001/health) — you should see:
 
 ```json
 {

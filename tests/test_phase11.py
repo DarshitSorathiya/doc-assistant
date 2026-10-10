@@ -161,6 +161,45 @@ def test_knowledge_graph_construction_and_query(client, auth_headers):
     assert any("Rahul" in n["label"] for n in filtered_data["nodes"])
 
 
+def test_knowledge_graph_canonicalizes_entities_and_combines_filters(client, auth_headers):
+    """Equivalent entity values should connect, and type+text filters should narrow together."""
+    db = TestingSessionLocal()
+    user = db.query(User).filter(User.email == "kguser@example.com").first()
+    docs = [
+        Document(
+            user_id=user.id,
+            filename=f"canonical_{index}.pdf",
+            file_path=f"/p/canonical_{index}.pdf",
+            file_hash=f"canonical_hash_{index}",
+            mime_type="application/pdf",
+            file_size=100,
+            status=DocumentStatus.READY,
+        )
+        for index in range(2)
+    ]
+    db.add_all(docs)
+    db.flush()
+    db.add_all([
+        Entity(document_id=docs[0].id, entity_type="policy_number", value="POL-CASE-77"),
+        Entity(document_id=docs[1].id, entity_type="policy_number", value="  pol-case-77  "),
+        Entity(document_id=docs[1].id, entity_type="person_name", value="Unrelated Person"),
+    ])
+    db.commit()
+    db.close()
+
+    result = client.get(
+        "/api/v1/graph",
+        params={"entity_type": "Policy", "query": "POL-CASE-77"},
+        headers=auth_headers,
+    )
+    assert result.status_code == 200
+    data = result.json()
+    policy_nodes = [node for node in data["nodes"] if node["node_type"] == "Policy"]
+    assert len(policy_nodes) == 1
+    assert len([edge for edge in data["edges"] if edge["relation"] == "has_policy"]) == 2
+    assert not any(node.get("label") == "Unrelated Person" for node in data["nodes"])
+
+
 def test_connected_documents_lookup(client, auth_headers):
     """Test finding all documents connected to a person or entity in the graph."""
     db = TestingSessionLocal()

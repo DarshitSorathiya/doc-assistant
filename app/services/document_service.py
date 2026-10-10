@@ -8,6 +8,7 @@
 import os
 import re
 import hashlib
+import logging
 from typing import Optional, List, Tuple
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,6 +35,8 @@ from app.models import (
     Tag,
     AuditLog,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # Allowed document extensions and mime types
@@ -203,6 +206,13 @@ class DocumentService:
             db.add(audit)
             db.commit()
             db.refresh(existing_doc)
+
+            # Ensure the newly uploaded version is immediately searchable for chat/RAG queries.
+            try:
+                cls.process_document_ocr(db=db, user_id=user.id, document_id=existing_doc.id)
+            except Exception as exc:
+                logger.warning(f"Automatic OCR processing failed after re-upload for document {existing_doc.id}: {exc}")
+
             return existing_doc, False
 
         # -------------------------------------------------------------
@@ -279,6 +289,13 @@ class DocumentService:
         db.add(audit)
         db.commit()
         db.refresh(new_doc)
+
+        # Immediate OCR + indexing makes uploaded documents usable in chat and retrieval immediately.
+        try:
+            cls.process_document_ocr(db=db, user_id=user.id, document_id=new_doc.id)
+        except Exception as exc:
+            logger.warning(f"Automatic OCR processing failed after upload for document {new_doc.id}: {exc}")
+
         return new_doc, False
 
     @staticmethod

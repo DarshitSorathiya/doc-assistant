@@ -12,6 +12,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.main import app
 from app.database import Base, get_db
+from app.database import create_tables
 from app.rag.memory import conversation_memory
 
 
@@ -29,10 +30,12 @@ TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engin
 
 
 @pytest.fixture(autouse=True)
-def setup_test_db():
+def setup_test_db(monkeypatch):
     """Create all tables before each test and drop them after."""
     Base.metadata.create_all(bind=engine)
     conversation_memory._sessions.clear()
+    # Keep test runs deterministic and prevent calls to real external LLM APIs.
+    monkeypatch.setattr("app.rag.chain.rag_chain._call_external_llm", lambda **kwargs: None)
     yield
     Base.metadata.drop_all(bind=engine)
     conversation_memory._sessions.clear()
@@ -162,6 +165,173 @@ def setup_rag_corpus(client: TestClient, auth_headers_user1, auth_headers_user2,
 class TestRAGQueriesAndCitations:
     """Test grounded answering and citation attribution."""
 
+    def test_chat_uses_grounded_synthesis_instead_of_raw_chunk_extraction(
+        self, client: TestClient, auth_headers_user1, setup_rag_corpus, monkeypatch
+    ):
+        synthesized = (
+            "Your HDFC ERGO policy covers inpatient hospitalization and daycare procedures. "
+            "The coverage limit is ₹10,00,000, and the annual premium is ₹24,500. "
+            "These details are from the policy schedule on page 1."
+        )
+        monkeypatch.setattr(
+            "app.rag.chain.rag_chain._call_external_llm",
+            lambda **kwargs: synthesized,
+        )
+
+        response = client.post(
+            "/api/v1/query",
+            json={"query": "What should I know about my health policy coverage and cost?"},
+            headers=auth_headers_user1,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["answer"] == synthesized
+        assert data["sources"]
+        assert data["model_used"] != "local-synthesizer"
+
+    def test_api_root_and_favicon_routes(self, client: TestClient):
+        root = client.get("/")
+        assert root.status_code == 200
+        assert root.json()["ui"] == "http://localhost:8501"
+        assert client.get("/favicon.ico").status_code == 204
+
+    def test_resume_evaluation_uses_resume_content_and_returns_score(
+        self, client: TestClient, auth_headers_user1, tmp_path, monkeypatch
+    ):
+        """Resume requests should evaluate resume text instead of failing a literal-keyword guardrail."""
+        pdf = _create_sample_pdf(
+            tmp_path,
+            "my_resume.pdf",
+            "Professional Summary: Software engineer.\n"
+            "Experience: Built reliable document search services.\n"
+            "Skills: Python, FastAPI, SQL.\n"
+            "Education: Bachelor of Science in Computer Science.\n"
+            "Projects: Developed a document assistant.\n",
+        )
+        upload = client.post(
+            "/api/v1/documents/upload",
+            headers=auth_headers_user1,
+            files={"file": ("my_resume.pdf", io.BytesIO(pdf), "application/pdf")},
+        )
+        assert upload.status_code == 201
+
+        captured = {}
+
+        def no_llm(query, context_str, history_str, system_prompt=None):
+            captured["context"] = context_str
+            captured["prompt"] = system_prompt
+            return None
+
+        monkeypatch.setattr("app.agent.agent.rag_chain._call_external_llm", no_llm)
+        response = client.post(
+            "/api/v1/query",
+            json={"query": "Based on my resume evaluate me on scale of 10"},
+            headers=auth_headers_user1,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "Provisional resume score: 8/10" in data["answer"]
+        assert "Skills: Python" in captured["context"]
+        assert "do not infer personal traits" in captured["prompt"].lower()
+        assert data["sources"][0]["filename"] == "my_resume.pdf"
+
+    def test_multiple_resumes_require_selection_and_answer_from_selected_document(
+        self, client: TestClient, auth_headers_user1, tmp_path, monkeypatch
+    ):
+        resume_text = (
+            "Professional Summary: Software engineer with extensive application development experience.\n"
+            "Experience: Built and maintained secure web platforms for business teams.\n"
+            "Skills: Python, FastAPI, SQL, testing, cloud deployment.\n"
+            "Education: Bachelor degree in computer science from a recognized university.\n"
+            "Projects: Developed customer portals and automated reporting systems.\n"
+        )
+        uploaded_ids = []
+        for filename, content in (
+            ("frontend_resume.pdf", resume_text + "Frontend project: React interface delivery.\n"),
+            ("backend_resume.pdf", resume_text + "Backend project: API service delivery.\n"),
+        ):
+            pdf = _create_sample_pdf(tmp_path, filename, content)
+            upload = client.post(
+                "/api/v1/documents/upload",
+                headers=auth_headers_user1,
+                files={"file": (filename, io.BytesIO(pdf), "application/pdf")},
+            )
+            assert upload.status_code == 201
+            uploaded_ids.append(upload.json()["document"]["id"])
+
+        monkeypatch.setattr(
+            "app.agent.agent.rag_chain._call_external_llm",
+            lambda **kwargs: None,
+        )
+        first = client.post(
+            "/api/v1/query",
+            json={"query": "Based on my resume rate me on scale of 10"},
+            headers=auth_headers_user1,
+        )
+        assert first.status_code == 200
+        first_data = first.json()
+        assert len(first_data["document_options"]) == 2
+        assert "Select one" in first_data["answer"]
+
+        chosen_id = uploaded_ids[1]
+        second = client.post(
+            "/api/v1/query",
+            json={
+                "query": "Based on my resume rate me on scale of 10",
+                "session_id": first_data["session_id"],
+                "document_id": chosen_id,
+            },
+            headers=auth_headers_user1,
+        )
+        assert second.status_code == 200
+        result = second.json()
+        assert result["document_options"] == []
+        assert result["sources"]
+        assert {source["document_id"] for source in result["sources"]} == {chosen_id}
+        assert "Provisional resume score:" in result["answer"]
+
+    def test_greeting_gets_a_friendly_chat_response(self, client: TestClient, auth_headers_user1):
+        response = client.post(
+            "/api/v1/query",
+            json={"query": "Hello"},
+            headers=auth_headers_user1,
+        )
+        assert response.status_code == 200
+        assert "Hi!" in response.json()["answer"]
+        assert response.json()["sources"] == []
+
+    def test_upload_auto_processes_document_for_rag(self, client: TestClient, auth_headers_user1, tmp_path):
+        """Uploading a document should immediately process it so chat queries can answer against it."""
+        pdf = _create_sample_pdf(
+            tmp_path,
+            "auto_processed_policy.pdf",
+            "Policy Number: POL-AUTO-1001\nInsured Name: Jane Smith\nCoverage: Rs. 20,00,000\n",
+        )
+
+        response = client.post(
+            "/api/v1/documents/upload",
+            headers=auth_headers_user1,
+            files={"file": ("auto_processed_policy.pdf", io.BytesIO(pdf), "application/pdf")},
+        )
+
+        assert response.status_code == 201
+        data = response.json()
+        assert data["document"]["status"] == "ready"
+        assert "Policy Number" in (data["document"].get("filename") or "") or data["document"].get("page_count") in (1, 2)
+
+        doc_id = data["document"]["id"]
+        query = client.post(
+            "/api/v1/query",
+            json={"query": "What is the policy number for Jane Smith?"},
+            headers=auth_headers_user1,
+        )
+
+        assert query.status_code == 200
+        answer = query.json()["answer"]
+        assert "POL-AUTO-1001" in answer or len(query.json()["sources"]) >= 1
+
     def test_rag_query_with_page_citations(self, client: TestClient, auth_headers_user1, setup_rag_corpus):
         """Test RAG query returns an answer with correct document filename and page citation."""
         response = client.post(
@@ -201,6 +371,22 @@ class TestRAGQueriesAndCitations:
         
         # Grounding check: system should state lack of sufficient information
         assert "cannot find" in data["answer"].lower() or "not find sufficient" in data["answer"].lower() or len(data["sources"]) == 0
+
+    def test_rag_handles_out_of_domain_question(self, client: TestClient, auth_headers_user1, setup_rag_corpus):
+        """Out-of-domain questions should be answered with a focused document-only guidance message."""
+        response = client.post(
+            "/api/v1/query",
+            json={
+                "query": "What is the capital of France?",
+            },
+            headers=auth_headers_user1,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        answer = data["answer"].lower()
+        assert "uploaded documents" in answer or "document" in answer
+        assert "france" not in answer.lower() or "capital" not in answer.lower()
 
 
 class TestConversationalMemory:
@@ -255,6 +441,54 @@ class TestConversationalMemory:
         )
         assert clear_resp.status_code == 200
         assert clear_resp.json()["cleared"] is True
+
+    def test_chat_history_is_persisted_loadable_and_user_isolated(
+        self, client: TestClient, auth_headers_user1, auth_headers_user2
+    ):
+        response = client.post(
+            "/api/v1/query",
+            json={"query": "Hello"},
+            headers=auth_headers_user1,
+        )
+        session_id = response.json()["session_id"]
+
+        sessions = client.get("/api/v1/query/sessions", headers=auth_headers_user1)
+        assert sessions.status_code == 200
+        assert any(item["session_id"] == session_id for item in sessions.json()["sessions"])
+
+        loaded = client.get(f"/api/v1/query/session/{session_id}", headers=auth_headers_user1)
+        assert loaded.status_code == 200
+        assert [message["role"] for message in loaded.json()["messages"]] == ["user", "assistant"]
+
+        forbidden = client.get(f"/api/v1/query/session/{session_id}", headers=auth_headers_user2)
+        assert forbidden.status_code == 404
+
+        deleted = client.delete(f"/api/v1/query/session/{session_id}", headers=auth_headers_user1)
+        assert deleted.status_code == 200
+        remaining = client.get("/api/v1/query/sessions", headers=auth_headers_user1)
+        assert not any(item["session_id"] == session_id for item in remaining.json()["sessions"])
+
+    def test_startup_migration_adds_missing_document_options_column(self, tmp_path):
+        """Legacy chat tables gain the new nullable column without losing messages."""
+        from sqlalchemy import inspect, text
+
+        from app import database
+
+        legacy_engine = create_engine(f"sqlite:///{tmp_path / 'legacy.db'}")
+        with legacy_engine.begin() as connection:
+            connection.execute(text(
+                "CREATE TABLE chat_messages (id INTEGER PRIMARY KEY, session_id VARCHAR(36) NOT NULL, "
+                "role VARCHAR(20) NOT NULL, content TEXT NOT NULL, sources JSON, created_at DATETIME NOT NULL)"
+            ))
+        original_engine = database.engine
+        database.engine = legacy_engine
+        try:
+            create_tables()
+            column_names = {column["name"] for column in inspect(legacy_engine).get_columns("chat_messages")}
+            assert "document_options" in column_names
+        finally:
+            database.engine = original_engine
+            legacy_engine.dispose()
 
 
 class TestRAGUserIsolation:

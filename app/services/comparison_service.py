@@ -35,11 +35,26 @@ class ComparisonService:
         if not doc1 or not doc2:
             return {"error": "One or both document IDs not found or unauthorized"}
 
+        if doc1.id == doc2.id:
+            return {"error": "Select two different documents to compare."}
+
+        if doc1.status.value != "ready" or doc2.status.value != "ready":
+            return {"error": "Both documents must finish processing before they can be compared."}
+
         ent1_list = db.query(Entity).filter(Entity.document_id == doc_id_1).all()
         ent2_list = db.query(Entity).filter(Entity.document_id == doc_id_2).all()
 
-        ent1 = {e.entity_type: e.value for e in ent1_list}
-        ent2 = {e.entity_type: e.value for e in ent2_list}
+        ent1_values: Dict[str, List[Entity]] = {}
+        ent2_values: Dict[str, List[Entity]] = {}
+        for entity in ent1_list:
+            ent1_values.setdefault(entity.entity_type, []).append(entity)
+        for entity in ent2_list:
+            ent2_values.setdefault(entity.entity_type, []).append(entity)
+
+        # Keep every distinct extracted value; a dict keyed only by entity type
+        # silently discarded all but the last occurrence (e.g. multiple dates).
+        ent1 = {key: sorted({entity.value for entity in values}) for key, values in ent1_values.items()}
+        ent2 = {key: sorted({entity.value for entity in values}) for key, values in ent2_values.items()}
 
         all_types = sorted(list(set(ent1.keys()).union(set(ent2.keys()))))
         differences = []
@@ -49,15 +64,26 @@ class ComparisonService:
         fn2_key = f"{doc2.filename} (ID {doc2.id})"
 
         for et in all_types:
-            v1 = ent1.get(et)
-            v2 = ent2.get(et)
-            if v1 == v2 and v1 is not None:
-                identical.append({"entity": et, "value": v1})
+            values1 = ent1.get(et, [])
+            values2 = ent2.get(et, [])
+            v1 = values1[0] if len(values1) == 1 else values1 or None
+            v2 = values2[0] if len(values2) == 1 else values2 or None
+            if values1 == values2 and values1:
+                identical.append({
+                    "entity": et,
+                    "value": v1,
+                    "document_1_pages": sorted({entity.source_page for entity in ent1_values[et] if entity.source_page}),
+                    "document_2_pages": sorted({entity.source_page for entity in ent2_values[et] if entity.source_page}),
+                })
             else:
                 differences.append({
                     "entity": et,
                     fn1_key: v1 or "N/A",
                     fn2_key: v2 or "N/A",
+                    "document_1_pages": sorted({entity.source_page for entity in ent1_values.get(et, []) if entity.source_page}),
+                    "document_2_pages": sorted({entity.source_page for entity in ent2_values.get(et, []) if entity.source_page}),
+                    "document_1_confidence": round(sum(entity.confidence or 0 for entity in ent1_values.get(et, [])) / len(ent1_values[et]), 3) if ent1_values.get(et) else None,
+                    "document_2_confidence": round(sum(entity.confidence or 0 for entity in ent2_values.get(et, [])) / len(ent2_values[et]), 3) if ent2_values.get(et) else None,
                 })
 
         return {

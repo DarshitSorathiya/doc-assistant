@@ -53,10 +53,10 @@ SAMPLE_GENERATION_EVAL_SET = [
     },
     {
         "question": "Compare my two insurance policies",
-        "answer": "Policy A (Star Health) covers up to 5 lakhs with a premium of 12000/yr. Policy B (HDFC Ergo) covers up to 10 lakhs with a premium of 18000/yr.",
+        "answer": "Policy A (Star Health) covers up to 5 lakhs with a premium of 12000/yr. Policy B (HDFC Ergo) covers up to 10 lakhs with a premium of 18001/yr.",
         "context_chunks": [
             {"text": "Star Health: Coverage 5L, Premium 12000", "filename": "star_health.pdf", "page": 1},
-            {"text": "HDFC Ergo: Coverage 10L, Premium 18000", "filename": "hdfc_ergo.pdf", "page": 2},
+            {"text": "HDFC Ergo: Coverage 10L, Premium 18001", "filename": "hdfc_ergo.pdf", "page": 2},
         ],
         "cited_sources": [
             {"document": "star_health.pdf", "page": 1},

@@ -96,6 +96,7 @@ def hybrid_search(
         category=request.category,
         top_k=request.top_k,
         use_reranker=request.use_reranker,
+        alpha=request.alpha,
     )
     return SearchResponse(
         query=request.query,
