@@ -1,0 +1,64 @@
+# ============================================================
+# Personal Document Finder — requirements.txt
+# ============================================================
+
+# Use the CPU-only PyTorch wheels on Linux to avoid pulling CUDA libraries.
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+# --- Web framework & server ---
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9          # file uploads
+
+# --- Database ---
+sqlalchemy>=2.0.30
+alembic>=1.13.0
+aiosqlite>=0.20.0                # async SQLite (dev mode)
+
+# --- Validation / Settings ---
+pydantic>=2.7.0
+pydantic-settings>=2.3.0
+python-dotenv>=1.0.1
+
+# --- Auth ---
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+
+# --- OCR & PDF ---
+paddleocr>=2.7.0
+paddlepaddle>=2.6.0              # PaddleOCR backend
+pytesseract>=0.3.10
+pdf2image>=1.17.0
+Pillow>=10.3.0
+PyMuPDF>=1.24.0                  # fitz — text extraction from digital PDFs
+pdfplumber>=0.11.0               # table extraction
+
+# --- Embeddings & Vector DB ---
+chromadb>=0.5.0
+sentence-transformers>=3.0.0
+torch==2.8.0+cpu; sys_platform == "linux"
+torch>=2.2.0; sys_platform != "linux"
+
+# --- Keyword search ---
+rank_bm25>=0.2.2
+
+# --- LLM clients ---
+langchain>=0.2.0
+langchain-openai>=0.1.0
+langchain-community>=0.2.0
+openai>=1.30.0
+ollama>=0.2.0                    # Ollama Python client
+
+# --- Knowledge graph ---
+networkx>=3.3
+
+# --- UI ---
+streamlit>=1.35.0
+
+# --- Testing ---
+pytest>=8.2.0
+pytest-asyncio>=0.23.0
+httpx>=0.27.0                    # async test client for FastAPI
+
+# --- MCP ---
+mcp>=1.0.0

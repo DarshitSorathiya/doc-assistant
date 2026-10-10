@@ -1,0 +1,76 @@
+# ============================================================
+# Personal Document Finder — Docker Compose
+# ============================================================
+# Services: API, Streamlit UI, PostgreSQL, Ollama (optional)
+#
+# Quick start (SQLite dev):  docker-compose up api ui
+# Full stack:               docker-compose up
+# With Ollama:              docker-compose --profile ollama up
+# ============================================================
+
+services:
+  # ---- FastAPI Application ----
+  api:
+    build: .
+    container_name: doc-finder-api
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql://docfinder:docfinder_secret@postgres:5432/docfinder
+      - DEBUG=false
+    volumes:
+      - ./storage:/app/storage
+      - ./chroma_data:/app/chroma_data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ---- Streamlit UI ----
+  ui:
+    build: .
+    container_name: doc-finder-ui
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    command: ["streamlit", "run", "ui/app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  # ---- PostgreSQL (production DB) ----
+  postgres:
+    image: postgres:16-alpine
+    container_name: doc-finder-db
+    environment:
+      POSTGRES_USER: docfinder
+      POSTGRES_PASSWORD: docfinder_secret
+      POSTGRES_DB: docfinder
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U docfinder"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ---- Ollama (optional local LLM) ----
+  ollama:
+    image: ollama/ollama:latest
+    container_name: doc-finder-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    profiles:
+      - ollama   # only starts with: docker-compose --profile ollama up
+
+volumes:
+  pgdata:
+  ollama_data:
